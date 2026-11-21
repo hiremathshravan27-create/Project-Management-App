@@ -1,9 +1,22 @@
-
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <limits.h>
+
+#ifdef _WIN32
 #include <winsock2.h>
+#pragma comment(lib, "ws2_32.lib")
+#else
+#include <sys/types.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <unistd.h>
+typedef int SOCKET;
+#define INVALID_SOCKET (-1)
+#define SOCKET_ERROR (-1)
+#define closesocket close
+#endif
 
 #include "database.h"
 #include "auth.h"
@@ -11,9 +24,7 @@
 #include "project.h"
 #include "issue.h"
 
-#pragma comment(lib, "ws2_32.lib")
-
-#define PORT 8080
+#define DEFAULT_PORT 8080
 #define BUFFER_SIZE 8192
 
 // Extract a simple string value from JSON
@@ -107,7 +118,7 @@ void sendResponse(
         sizeof(response),
         "HTTP/1.1 %d %s\r\n"
         "Content-Type: application/json\r\n"
-        "Access-Control-Allow-Origin: http://localhost:5173\r\n"
+        "Access-Control-Allow-Origin: *\r\n"
         "Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS\r\n"
         "Access-Control-Allow-Headers: Content-Type, Authorization\r\n"
         "Content-Length: %d\r\n"
@@ -153,74 +164,72 @@ int main() {
         return 1;
     }
 
-    WSADATA wsa;
     SOCKET server, client;
-
     struct sockaddr_in address;
-
     char request[BUFFER_SIZE];
 
-    // Initialize Winsock
-    if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) {
-
-        printf("Winsock initialization failed!\n");
-
-        PQfinish(db);
-        return 1;
+    // Render supplies PORT as an environment variable.
+    int port = DEFAULT_PORT;
+    const char *portText = getenv("PORT");
+    if (portText && *portText) {
+        char *end = NULL;
+        long parsedPort = strtol(portText, &end, 10);
+        if (end != portText && *end == '\\0' &&
+            parsedPort > 0 && parsedPort <= 65535) {
+            port = (int)parsedPort;
+        } else {
+            fprintf(stderr, "Invalid PORT value; using %d\\n", DEFAULT_PORT);
+        }
     }
 
-    // Create socket
     server = socket(AF_INET, SOCK_STREAM, 0);
-
     if (server == INVALID_SOCKET) {
-
-        printf("Socket creation failed!\n");
-
-        WSACleanup();
+        perror("Socket creation failed");
         PQfinish(db);
         return 1;
     }
 
-    // Configure server address
+    int reuseAddress = 1;
+#ifdef _WIN32
+    setsockopt(server, SOL_SOCKET, SO_REUSEADDR,
+               (const char *)&reuseAddress, sizeof(reuseAddress));
+#else
+    setsockopt(server, SOL_SOCKET, SO_REUSEADDR,
+               &reuseAddress, sizeof(reuseAddress));
+#endif
+
     memset(&address, 0, sizeof(address));
-
     address.sin_family = AF_INET;
-    address.sin_addr.s_addr = INADDR_ANY;
-    address.sin_port = htons(PORT);
+    address.sin_addr.s_addr = htonl(INADDR_ANY);
+    address.sin_port = htons((unsigned short)port);
 
-    // Bind socket
-    if (bind(
-        server,
-        (struct sockaddr *)&address,
-        sizeof(address)
-    ) == SOCKET_ERROR) {
-
-        printf("Binding failed: %d\n", WSAGetLastError());
-
+    if (bind(server, (struct sockaddr *)&address,
+             (int)sizeof(address)) == SOCKET_ERROR) {
+#ifdef _WIN32
+        fprintf(stderr, "Binding failed: %d\\n", WSAGetLastError());
+#else
+        perror("Binding failed");
+#endif
         closesocket(server);
-        WSACleanup();
         PQfinish(db);
-
         return 1;
     }
 
-    // Start listening
     if (listen(server, 5) == SOCKET_ERROR) {
-
-        printf("Listening failed!\n");
-
+        perror("Listening failed");
         closesocket(server);
-        WSACleanup();
         PQfinish(db);
-
         return 1;
     }
 
-    printf("C Backend running on port %d...\n", PORT);
+    printf("C Backend running on port %d...\\n", port);
 
     while (1) {
-
-        int address_length = sizeof(address);
+#ifdef _WIN32
+        int address_length = (int)sizeof(address);
+#else
+        socklen_t address_length = (socklen_t)sizeof(address);
+#endif
 
         client = accept(
             server,
@@ -1196,7 +1205,9 @@ int main() {
     }
 
     closesocket(server);
+#ifdef _WIN32
     WSACleanup();
+#endif
     PQfinish(db);
 
     return 0;
