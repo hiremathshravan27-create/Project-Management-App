@@ -174,7 +174,7 @@ int main() {
     if (portText && *portText) {
         char *end = NULL;
         long parsedPort = strtol(portText, &end, 10);
-        if (end != portText && *end == '\\0' &&
+        if (end != portText && *end == '\0' &&
             parsedPort > 0 && parsedPort <= 65535) {
             port = (int)parsedPort;
         } else {
